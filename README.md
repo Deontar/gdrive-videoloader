@@ -1,5 +1,5 @@
 # My fork additions
-Bulk video download
+- Bulk video download
 
 # GDrive VideoLoader
 
