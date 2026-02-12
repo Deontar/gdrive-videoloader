@@ -1,3 +1,6 @@
+# My fork additions
+Bulk video download
+
 # GDrive VideoLoader
 
 **GDrive VideoLoader** is a Python-based tool to download videos from Google Drive effortlessly, **including those marked as _view-only_** (no download option). It supports resumable downloads, progress bars, and various customization options for video fetching and downloading.
@@ -59,7 +62,7 @@ The script will automatically extract the file ID from the URL if you provide a 
 
 ### Features
 - Add support for downloading subtitles.
-- Add support for multiple downloads (list or file of video IDs).
+- ~~Add support for multiple downloads (list or file of video IDs).~~
 - Allow selection of video quality.
 - Implement temporary file naming during download.
 
