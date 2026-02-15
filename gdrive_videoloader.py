@@ -5,6 +5,7 @@ import sys
 from tqdm import tqdm
 import os
 import re
+from bs4 import BeautifulSoup
 
 def extract_drive_id(input_str: str) -> str:
     """Extracts the Google Drive file ID from a URL or returns the input if it's already an ID."""
@@ -13,6 +14,100 @@ def extract_drive_id(input_str: str) -> str:
     if match:
         return match.group(1)
     return input_str
+
+
+def extract_bulk_data_ids_from_folder(url: str, verbose: bool) -> list[str]:
+    """Extracts all data-id values from the DOM of a given folder URL using regex.
+    Removes duplicates while preserving the first-seen order.
+    """
+    if verbose:
+        print(f"[INFO] Fetching folder URL: {url}")
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        text = response.text
+        pattern = r'data-id\s*=\s*["\']([^"\']+)["\']'
+        matches = re.findall(pattern, text)
+
+        data_ids = []
+        seen = set()
+        for data_id in matches:
+            # Skip invalid short ids
+            if len(data_id) < 5:
+                continue
+            if data_id not in seen:
+                data_ids.append(data_id)
+                seen.add(data_id)
+
+        if verbose:
+            print(f"[INFO] Total unique data-ids found: {len(data_ids)}")
+        return data_ids
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching folder URL: {e}")
+        return []
+
+def create_bulk_video_id_drive_url(video_id: str) -> str:
+    """Create a get_video_info URL for a single video id."""
+    return f'https://drive.google.com/u/0/get_video_info?docid={video_id}&drive_originator_app=303'
+
+def sanitize_filename(name: str) -> str:
+    if not name:
+        return name
+    invalid = r'<>:"/\\|?*'
+    for ch in invalid:
+        name = name.replace(ch, '_')
+    return name.strip()
+
+def download_from_video_id(video_id: str, output_file: str | None, chunk_size: int, verbose: bool) -> None:
+    """Download a single video by its Drive video id (docid)."""
+    drive_url = create_bulk_video_id_drive_url(video_id)
+    if verbose:
+        print(f"[INFO] Accessing {drive_url}")
+    response = requests.get(drive_url)
+    response.raise_for_status()
+    page_content = response.text
+    cookies = response.cookies.get_dict()
+
+    video, title = get_video_url(page_content, verbose)
+    filename = output_file if output_file else sanitize_filename(title) or video_id
+    if video:
+        download_file(video, cookies, filename, chunk_size, verbose)
+    else:
+        print(f"Unable to retrieve the video URL for id {video_id}.")
+
+def extract_bulk_data_ids_from_folder(url: str, verbose: bool) -> list[str]:
+    """Extracts all data-id values from the DOM of a given URL."""
+    if verbose:
+        print(f"[INFO] Fetching URL: {url}")
+    
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        # Extract data-id attributes using regex and remove duplicates while
+        # preserving the first-seen order.
+        text = response.text
+        pattern = r'data-id\s*=\s*["\']([^"\']+)["\']'
+        matches = re.findall(pattern, text)
+
+        data_ids = []
+        seen = set()
+        for data_id in matches:
+            # Skip obviously-invalid short ids
+            if len(data_id) < 5:
+                continue
+            if data_id not in seen:
+                data_ids.append(data_id)
+                seen.add(data_id)
+        
+        if verbose:
+            print(f"[INFO] Total unique data-ids found: {len(data_ids)}")
+            for id in data_ids:
+                print(f"[INFO] Found data-id: {id}")
+        return data_ids
+
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching URL: {e}")
+        return []
 
 def get_video_url(page_content: str, verbose: bool) -> tuple[str, str]:
     """Extracts the video playback URL and title from the page content."""
@@ -64,27 +159,33 @@ def download_file(url: str, cookies: dict, filename: str, chunk_size: int, verbo
 
 def main(video_id_or_url: str, output_file: str = None, chunk_size: int = 1024, verbose: bool = False) -> None:
     """Main function to process video ID or URL and download the video file."""
+    # If URL looks like a folder, extract all data-ids and process in bulk
+    if '/folders/' in video_id_or_url:
+        if verbose:
+            print(f"[INFO] Detected folder URL, extracting data-ids from: {video_id_or_url}")
+        data_ids = extract_bulk_data_ids_from_folder(video_id_or_url, verbose)
+        if not data_ids:
+            print("No data-IDs found in folder URL.")
+            return
+
+        for idx, data_id in enumerate(data_ids, 1):
+            if verbose:
+                print(f"\n[INFO] ({idx}/{len(data_ids)}) Processing id: {data_id}")
+            try:
+                download_from_video_id(data_id, output_file, chunk_size, verbose)
+            except requests.exceptions.RequestException as e:
+                print(f"Error accessing video info for {data_id}: {e}")
+        return
+
+    # Otherwise treat input as single video id or URL
     video_id = extract_drive_id(video_id_or_url)
-    
     if verbose:
         print(f"[INFO] Extracted video ID: {video_id}")
-    
-    drive_url = f'https://drive.google.com/u/0/get_video_info?docid={video_id}&drive_originator_app=303'
-    
-    if verbose:
-        print(f"[INFO] Accessing {drive_url}")
 
-    response = requests.get(drive_url)
-    page_content = response.text
-    cookies = response.cookies.get_dict()
-
-    video, title = get_video_url(page_content, verbose)
-
-    filename = output_file if output_file else title
-    if video:
-        download_file(video, cookies, filename, chunk_size, verbose)
-    else:
-        print("Unable to retrieve the video URL. Ensure the video ID is correct and accessible.")
+    try:
+        download_from_video_id(video_id, output_file, chunk_size, verbose)
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching video info: {e}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Script to download videos from Google Drive.")
@@ -92,6 +193,7 @@ if __name__ == "__main__":
     parser.add_argument("-o", "--output", type=str, help="Optional output file name for the downloaded video (default: video name in gdrive).")
     parser.add_argument("-c", "--chunk_size", type=int, default=1024, help="Optional chunk size (in bytes) for downloading the video. Default is 1024 bytes.")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode.")
+    parser.add_argument("--extract-ids", type=str, help="Extract all data-id values from a given URL (e.g., Google Drive folder URL).")
     parser.add_argument("--version", action="version", version="%(prog)s 1.0")
 
     args = parser.parse_args()
